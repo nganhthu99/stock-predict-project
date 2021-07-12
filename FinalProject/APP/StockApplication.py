@@ -43,18 +43,17 @@ def update_data(companyName):
     original_df = original_df.iloc[::-1]
     original_df.to_csv('../DATA/' + companyName +'.csv')
 
-
-def lstm_predict_future(data, modelName, indicatorArr, period):
-    # model
-    modelFileName = '../MODEL/' + modelName
-    sorted(indicatorArr)
-    for indicator in indicatorArr:
-        if indicator == 'close':
-            continue
-        modelFileName = modelFileName + '_' + indicator
-    modelFileName = modelFileName + '.h5'
-    model = load_model(modelFileName)
-        
+def replace_bbands(the_list):
+    for item in the_list:
+        if item == 'KBANDS':
+            yield 'Real Lower Band'
+            yield 'Real Middle Band'
+            yield 'Real Upper Band'
+        else:
+            yield item
+    
+    
+def lstm_predict_future(data, model, indicatorArr, period):    
     # data
     data = data[indicatorArr].values
     data = data[-60:]
@@ -73,29 +72,24 @@ def lstm_predict_future(data, modelName, indicatorArr, period):
     predictedValue = scaler.inverse_transform(np.tile(predictedScaledValue, (1, scaledData.shape[1])))[:, 0]
     
     return predictedValue
+    
 
-def xgboost_predict_future(data, modelName, indicatorArr, period):
-    modelFileName = '../MODEL/' + modelName
-    sorted(indicatorArr)
-    for indicator in indicatorArr:
-        if indicator == 'close':
-            continue
-        modelFileName = modelFileName + '_' + indicator
-    modelFileName = modelFileName + '.dat'
-    model = pickle.load(open(modelFileName, "rb"))
-    numDataPoint = int(period / 15)
+def xgboost_predict_future(data, model, indicatorArr, period):
+    # indicator
+    indicatorArr.insert(1,'volume')
     
-    temp = indicatorArr.copy()
-    temp.append('volume')
-    data = data[temp]
-    data = data[-5:]
+    # data
+    data = data[indicatorArr]
+    data = data[-2:]
     
+    # model input
     X = pd.DataFrame({})
-    for column in data.columns:
-        n = len(data)
-        for i in range(1, n + 1):
-            X[column + '_date_' + str(i)] = [data.iloc[n - i][column]] 
+    n = len(data)
+    for i in range(1, n + 1):
+        for column in data.columns:
+            X[column + '_date_' + str(i)] = [data.iloc[n - i][column]]
     
+    # predicted value
     predictedValue = model.predict(X)
     
     return predictedValue
@@ -147,9 +141,9 @@ app.layout = html.Div([
                             "margin-right": "auto", "width": "80%"}),
                 
                 dcc.Dropdown(id='dropdown-model',
-                     options=[{'label': 'Extreme Gradient Boosting', 'value': 'XGBOOST'},
-                              {'label': 'Recurrent Neural Network','value': 'RNN'}, 
-                              {'label': 'Long Short Term Memory', 'value': 'LSTM'}], 
+                     options=[{'label': 'Extreme Gradient Boosting (XGBOOST)', 'value': 'XGBOOST'},
+                              {'label': 'Recurrent Neural Network (RNN)','value': 'RNN'}, 
+                              {'label': 'Long Short Term Memory (LSTM)', 'value': 'LSTM'}], 
                      multi=False, placeholder="Choose model",value='LSTM',
                      style={"margin-left": "auto", "margin-top": "10px", "margin-bottom": "10px",
                             "margin-right": "auto", "width": "80%"}),
@@ -162,10 +156,10 @@ app.layout = html.Div([
   
                 dcc.Dropdown(id='dropdown-indicator',
                      options=[{'label': 'Close Price','value': 'close'},
-                              {'label': 'Price Rate of Change','value': 'ROC'}, 
-                              {'label': 'Relative Strength Index', 'value': 'RSI'}, 
-                              {'label': 'Moving Averages', 'value': 'MA'},
-                              {'label': 'Bolling Bands', 'value': 'BB'}], 
+                              {'label': 'Price Rate of Change (ROC)','value': 'ROC'}, 
+                              {'label': 'Relative Strength Index (RSI)', 'value': 'RSI'}, 
+                              {'label': 'Simple Moving Averages (SMA)', 'value': 'SMA'},
+                              {'label': 'Bolling Bands', 'value': 'KBANDS'}], 
                      multi=True, placeholder="Choose indicators",value=['close'],
                      style={"margin-left": "auto", "margin-top": "10px", "margin-bottom": "10px",
                             "margin-right": "auto", "width": "80%"}),
@@ -284,42 +278,98 @@ def update_graph(selected_dropdown_value):
 def update_graph(n_clicks, companyName, modelName, indicatorArr, period):
     data = pd.read_csv("../DATA/" + companyName + '.csv')
     
+    # model
+    modelFileName = '../MODEL/' + modelName
+            
+    indicatorArr.sort(key = str.lower)
+    
+    for indicator in indicatorArr:
+        if indicator == 'close':
+            continue
+        if indicator == 'KBANDS':
+            indicator = 'BBANDS'
+        modelFileName = modelFileName + '_' + indicator
+        
+    indicatorArr = list(replace_bbands(indicatorArr))
+
+    print(indicatorArr)
+    
     predictions = None
     if modelName == 'LSTM' or modelName == 'RNN': 
-        predictions = lstm_predict_future(data, modelName, indicatorArr, period)
+        modelFileName = modelFileName + '.h5'
+        model = load_model(modelFileName)
+        futurePredictions = lstm_predict_future(data, model, indicatorArr, period)
+        #
+        dataset = data
+        dataset = dataset[indicatorArr].values
+        scaler = MinMaxScaler(feature_range=(0,1))
+        dataset = scaler.fit_transform(dataset)
+        X = []
+        for i in range(60, len(dataset)):
+            X.append(dataset[i-60:i][:])
+        X = np.array(X[-100:])
+        predictions = model.predict(X)
+        predictions = scaler.inverse_transform(np.tile(predictions, (1, dataset.shape[1])))[:, 0]
+        df = data.iloc[-len(predictions):]
+        df['predictions'] = predictions
+        #
     elif modelName == 'XGBOOST':
-        predictions = xgboost_predict_future(data, modelName, indicatorArr, period)
-    
-    prediction_df = pd.Series(predictions)
-    prediction_df = data['close'].append(pd.Series(predictions))
+        modelFileName = modelFileName + '.dat'
+        model = pickle.load(open(modelFileName, "rb"))
+        futurePredictions = xgboost_predict_future(data, model, indicatorArr, period)
+        #
+        dataset = data
+        temp = indicatorArr.copy()
+        dataset = dataset[temp]
+        for i in range (1, 3):
+            for indicator in temp:
+                dataset[indicator + "_date_" + str(i)] = dataset[indicator].shift(i)
+        dataset.dropna(inplace=True)
+        X = dataset.drop(temp, axis=1)
+        X = X[-100:]
+        predictions = model.predict(X)
+        df = data.iloc[-len(predictions):]
+        df['predictions'] = predictions
+        #
+        
+    print(modelFileName)
+        
+    prediction_df = pd.Series(futurePredictions)
+    prediction_df = data['close'].append(pd.Series(futurePredictions))
     prediction_df = prediction_df.reset_index()
     prediction_df = prediction_df.drop(columns=['index'], axis=1)
     prediction_df = prediction_df[0]
-    prediction_df = prediction_df[-len(predictions):]
+    prediction_df = prediction_df[-len(futurePredictions):]
+
     
     figure={
         "data":[
             go.Scatter(
-                x=data.index[-100:],
-                y=data.close[-100:],
+                x=data.index[-300:],
+                y=data.close[-300:],
                 mode='lines',
                 name="Real Price"
+            ),
+            go.Scatter(
+                x=df.index,
+                y=df.predictions,
+                mode='lines',
+                name="Model Validation in 100 previous data points"
             ),
             go.Scatter(
                 x=prediction_df.index,
                 y=prediction_df.values,
                 mode='markers',
                 name="Predicted Price"
-            )
+            ),
         ],
         "layout":go.Layout(
-            title=f"Predicted stock price is {prediction_df.values[0]} $.",
+            title=f"Predicted stock price is {prediction_df.values[0]} USD.",
             xaxis={'title':'Data Point'},
-            yaxis={'title':'Close Price'}
+            yaxis={'title':'Close Price (USD)'}
         )
     }
     return figure
-
 
 if __name__=='__main__':
     app.run_server(debug=True, port=8060)
