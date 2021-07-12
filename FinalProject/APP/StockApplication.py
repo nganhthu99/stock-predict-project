@@ -11,12 +11,38 @@ from keras.models import load_model
 from keras.models import Sequential
 from keras.layers import Dense, LSTM
 from keras.layers import Dropout
+import xgboost
+import pickle
+
+from alpha_vantage.timeseries import TimeSeries
+from alpha_vantage.techindicators import TechIndicators
+
 
 app = dash.Dash()
 server = app.server
 
-def calculate_indicator_roc(data, current):
-    return ((current[0] - data[19][0]) / (data[19][0])) * 100
+ts = TimeSeries(key='D8JHWTNSXO7M9VKV', output_format='pandas')
+ti = TechIndicators(key='D8JHWTNSXO7M9VKV', output_format='pandas')
+
+def update_data(companyName):
+    data = ts.get_intraday(symbol=companyName,interval='15min', outputsize='full') # data
+    data = data[0]
+    data.rename(lambda x: x[2:].strip(), axis='columns', inplace=True)
+    indicator_roc = ti.get_roc(symbol=companyName, interval='15min', time_period=20) # roc
+    indicator_roc = indicator_roc[0]
+    indicator_sma = ti.get_sma(symbol=companyName, interval='15min', time_period=20) # sma
+    indicator_sma = indicator_sma[0]
+    indicator_rsi = ti.get_rsi(symbol=companyName, interval='15min', time_period=20) # rsi
+    indicator_rsi = indicator_rsi[0]
+    indicator_bb = ti.get_bbands(symbol=companyName, interval='15min', time_period=20) # bbands
+    indicator_bb = indicator_bb[0]
+    original_df = pd.merge(data, indicator_roc, on='date', how='inner')
+    original_df = pd.merge(original_df, indicator_sma, on='date', how='inner')
+    original_df = pd.merge(original_df, indicator_rsi, on='date', how='inner')
+    original_df = pd.merge(original_df, indicator_bb, on='date', how='inner')
+    original_df = original_df.iloc[::-1]
+    original_df.to_csv('../DATA/' + companyName +'.csv')
+
 
 def lstm_predict_future(data, modelName, indicatorArr, period):
     # model
@@ -48,7 +74,34 @@ def lstm_predict_future(data, modelName, indicatorArr, period):
     
     return predictedValue
 
-df= pd.read_csv("./stock_data.csv")
+def xgboost_predict_future(data, modelName, indicatorArr, period):
+    modelFileName = '../MODEL/' + modelName
+    sorted(indicatorArr)
+    for indicator in indicatorArr:
+        if indicator == 'close':
+            continue
+        modelFileName = modelFileName + '_' + indicator
+    modelFileName = modelFileName + '.dat'
+    model = pickle.load(open(modelFileName, "rb"))
+    numDataPoint = int(period / 15)
+    
+    temp = indicatorArr.copy()
+    temp.append('volume')
+    data = data[temp]
+    data = data[-5:]
+    
+    X = pd.DataFrame({})
+    for column in data.columns:
+        n = len(data)
+        for i in range(1, n + 1):
+            X[column + '_date_' + str(i)] = [data.iloc[n - i][column]] 
+    
+    predictedValue = model.predict(X)
+    
+    return predictedValue
+
+
+df = pd.read_csv("../DATA/MSFT.csv")
 
 app.layout = html.Div([
    
@@ -67,6 +120,7 @@ app.layout = html.Div([
                              value=['MSFT'],
                              style={"display": "block", "margin-left": "auto", 
                                     "margin-right": "auto", "width": "60%"}),
+                
                 dcc.Graph(id='stockprice'),
                 
                 
@@ -118,7 +172,7 @@ app.layout = html.Div([
                 
                 html.Div([                
                     html.Button('Predict', 
-                     id='button', 
+                     id='predict_button', 
                      style={"background-color": "#5DADE2", "border": "none", "color": "white", 
                             "padding": "15px 32px", "text-align": "center", "text-decoration": "none", 
                             "display": "inline-block", "font-size": "16px", 
@@ -147,23 +201,23 @@ def update_graph(selected_dropdown):
     trace4 = []
     for stock in selected_dropdown:
         trace1.append(
-          go.Scatter(x=df[df["Stock"] == stock]["Date"],
-                     y=df[df["Stock"] == stock]["Open"],
+          go.Scatter(x=df["date"],
+                     y=df["open"],
                      mode='lines', opacity=0.8,
                      name=f'Open {dropdown[stock]}',textposition='bottom center'))
         trace2.append(
-          go.Scatter(x=df[df["Stock"] == stock]["Date"],
-                     y=df[df["Stock"] == stock]["High"],
+          go.Scatter(x=df["date"],
+                     y=df["high"],
                      mode='lines', opacity=0.7, 
                      name=f'High {dropdown[stock]}',textposition='bottom center'))
         trace3.append(
-          go.Scatter(x=df[df["Stock"] == stock]["Date"],
-                     y=df[df["Stock"] == stock]["Low"],
+          go.Scatter(x=df["date"],
+                     y=df["low"],
                      mode='lines', opacity=0.6,
                      name=f'Low {dropdown[stock]}',textposition='bottom center'))
         trace4.append(
-          go.Scatter(x=df[df["Stock"] == stock]["Date"],
-                     y=df[df["Stock"] == stock]["Close"],
+          go.Scatter(x=df["date"],
+                     y=df["close"],
                      mode='lines', opacity=0.5,
                      name=f'Close {dropdown[stock]}',textposition='bottom center'))
     traces = [trace1, trace2, trace3, trace4]
@@ -193,8 +247,8 @@ def update_graph(selected_dropdown_value):
     trace1 = []
     for stock in selected_dropdown_value:
         trace1.append(
-          go.Scatter(x=df[df["Stock"] == stock]["Date"],
-                     y=df[df["Stock"] == stock]["Volume"],
+          go.Scatter(x=df["date"],
+                     y=df["volume"],
                      mode='lines', opacity=0.7,
                      name=f'Volume {dropdown[stock]}', textposition='bottom center'))
     traces = [trace1]
@@ -219,7 +273,7 @@ def update_graph(selected_dropdown_value):
 
 @app.callback(    
     Output('predicted_graph', 'figure'),
-               [Input('button', 'n_clicks')], 
+               [Input('predict_button', 'n_clicks')], 
                [
                    State('dropdown-company', 'value'), 
                    State('dropdown-model', 'value'),
@@ -228,12 +282,13 @@ def update_graph(selected_dropdown_value):
                ]
               )
 def update_graph(n_clicks, companyName, modelName, indicatorArr, period):
-    if companyName == None or modelName == None or indicatorArr == None or period == None:
-        return null
-    
     data = pd.read_csv("../DATA/" + companyName + '.csv')
     
-    predictions = lstm_predict_future(data, modelName, indicatorArr, period)
+    predictions = None
+    if modelName == 'LSTM' or modelName == 'RNN': 
+        predictions = lstm_predict_future(data, modelName, indicatorArr, period)
+    elif modelName == 'XGBOOST':
+        predictions = xgboost_predict_future(data, modelName, indicatorArr, period)
     
     prediction_df = pd.Series(predictions)
     prediction_df = data['close'].append(pd.Series(predictions))
@@ -258,13 +313,12 @@ def update_graph(n_clicks, companyName, modelName, indicatorArr, period):
             )
         ],
         "layout":go.Layout(
-            title=f"Predicted stock price is {prediction_df.values[0]}.",
+            title=f"Predicted stock price is {prediction_df.values[0]} $.",
             xaxis={'title':'Data Point'},
             yaxis={'title':'Close Price'}
         )
     }
     return figure
-
 
 
 if __name__=='__main__':
