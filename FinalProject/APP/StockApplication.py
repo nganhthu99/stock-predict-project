@@ -105,6 +105,19 @@ app.layout = html.Div([
        
         dcc.Tab(label='Stock Data', children=[
             html.Div([
+                
+                html.Div([                
+                    html.Button('Update', 
+                     id='update_button', 
+                     style={"background-color": "#5DADE2", "border": "none", "color": "white", 
+                            "padding": "15px 32px", "text-align": "center", "text-decoration": "none", 
+                            "display": "inline-block", "font-size": "16px", 
+                            "margin-left": "auto", "margin-top": "10px", 
+                            "margin-bottom": "10px", "margin-right": "auto", "width": "20%"})
+                ], style={"text-align": "center"}),
+                
+                html.Div(id='something', children=''),
+                
                 html.H1("Stock Price", 
                         style={'textAlign': 'center'}),
               
@@ -127,6 +140,7 @@ app.layout = html.Div([
                              style={"display": "block", "margin-left": "auto", 
                                     "margin-right": "auto", "width": "60%"}),
                 dcc.Graph(id='volume')
+                
             ], className="container"),
         ]),
         
@@ -371,5 +385,11 @@ def update_graph(n_clicks, companyName, modelName, indicatorArr, period):
     }
     return figure
 
+@app.callback(Output('something', 'children'), [Input('update_button', 'n_clicks')] )
+def update_output(n_clicks):
+    update_data('MSFT')
+    df = pd.read_csv("../DATA/MSFT.csv")
+    
+
 if __name__=='__main__':
-    app.run_server(debug=True, port=8060)
+    app.run_server(debug=True, port=8070)
